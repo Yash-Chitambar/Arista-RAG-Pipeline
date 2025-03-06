@@ -1,0 +1,27 @@
+# White Paper
+
+# Conclusion
+
+Arista’s Etherlink AI platform delivers a holistic solution for optimized AI networking, greater as a coordinated total than individual parts on their own. Etherlink comprises best of breed products spanning AI-optimized Ethernet hardware systems, EOS-based software with leadership AI congestion avoidance features, EOS-based AI agents to coordinate networking with NICs, and end-to-end observability for AI infrastructure. Etherlink is based on Ethernet, which is the optimal choice for building high-performance AI clusters today, and will continue to evolve with new enhancements from the UEC. Ethernet delivers an incremental performance improvement over Infiniband for AI workloads, and Arista’s Etherlink AI platform delivers up to 65% improvement over plain vanilla Ethernet solutions with superior fault recovery to boot.
+
+The AI Center offers an opportunity to unify the entire networking ecosystem, bringing together the new AI back-end network with existing data center systems and infrastructure. Consistency with Ethernet technology offers the opportunity to align operations with coordinated skill sets across the entire organization. Then with unified networks and unified operations, it becomes easier to integrate with other systems in the existing data center, glean new insights from the network to compute nodes with coordinated observability, and to optimize performance for AI.
+
+# Reference
+
+- Blog: The Arrival of Open AI Networking, by Jayshree Ullal
+- Blog: The New AI Era: Networking for AI and AI for Networking, by Jayshree Ullal
+- Blog: The New Era of AI Centers, by Jayshree Ullal
+
+# Contact Information
+
+|Santa Clara—Corporate Headquarters|Ireland—International Headquarters|India—R&D Office|
+|---|---|---|
+|5453 Great America Parkway, Santa Clara, CA 95054|3130 Atlantic Avenue, Westpark Business Campus, Shannon, Co. Clare, Ireland|Global Tech Park, Tower A, 11th Floor, Marathahalli Outer Ring Road, Devarabeesanahalli Village, Varthur Hobli, Bangalore, India 560103|
+|Phone: +1-408-547-5500|Vancouver—R&D Office|Singapore—APAC Administrative Office|
+|Fax: +1-408-538-8920|9200 Glenlyon Pkwy, Unit 300, Burnaby, British Columbia, Canada V5J 5J8|9 Temasek Boulevard, #29-01, Suntec Tower Two, Singapore 038989|
+|San Francisco—R&D and Sales Office|Nashua—R&D Office| |
+|1390 Market Street, Suite 800, San Francisco, CA 94102|10 Tara Boulevard, Nashua, NH 03062| |
+
+Copyright © 2024 Arista Networks, Inc. All rights reserved. CloudVision, and EOS are registered trademarks and Arista Networks is a trademark of Arista Networks, Inc. All other company names are trademarks of their respective holders. Information in this document is subject to change without notice. Certain features may not yet be available. Arista Networks, Inc. assumes no responsibility for any errors that may appear in this document. 02-0112-02 June 5, 2024
+
+arista.com

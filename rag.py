@@ -1,20 +1,18 @@
 import google.generativeai as genai
 import chromadb
 from chromadb.config import Settings as ChromaSettings
-from sentence_transformers import SentenceTransformer
+from chromadb.utils import embedding_functions
 from config import (
     GOOGLE_API_KEY,
     CHROMA_PERSIST_DIR,
     EMBEDDING_MODEL,
+    LLM_MODEL
 )
 
 class RAGSystem:
     def __init__(self):
         # Configure Google Gemini with the correct API key
         genai.configure(api_key=GOOGLE_API_KEY)
-        
-        # Initialize embedding model directly
-        self.embed_model = SentenceTransformer(EMBEDDING_MODEL)
         
         # Initialize Gemini model with the latest supported version
         self.generation_config = {
@@ -24,8 +22,8 @@ class RAGSystem:
             "max_output_tokens": 1024,
         }
         
-        # Use the recommended non-deprecated model
-        model_name = "gemini-1.5-flash"
+        # Use the model specified in config
+        model_name = LLM_MODEL
         print(f"Using Gemini model: {model_name}")
         
         self.model = genai.GenerativeModel(
@@ -33,24 +31,31 @@ class RAGSystem:
             generation_config=self.generation_config
         )
         
-        # Initialize ChromaDB client with the same settings as in ingestion.py
+        # Initialize ChromaDB client
         self.chroma_client = chromadb.PersistentClient(
             path=CHROMA_PERSIST_DIR,
             settings=ChromaSettings(anonymized_telemetry=False)
         )
-        self.collection = self.chroma_client.get_collection("documents")
+        
+        # Create embedding function - must match the one used in ingestion
+        self.embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
+            model_name=EMBEDDING_MODEL
+        )
+        
+        # Get collection with embedding function
+        self.collection = self.chroma_client.get_collection(
+            name="documents",
+            embedding_function=self.embedding_function
+        )
 
     def query(self, query_text: str, num_results: int = 3) -> str:
         """
         Query the RAG system and generate a response
         """
         try:
-            # Create query embedding
-            query_embedding = self.embed_model.encode(query_text).tolist()
-            
-            # Query ChromaDB for similar documents
+            # Query ChromaDB - it will compute the embedding automatically
             results = self.collection.query(
-                query_embeddings=[query_embedding],
+                query_texts=[query_text],
                 n_results=min(num_results, self.collection.count())
             )
             
