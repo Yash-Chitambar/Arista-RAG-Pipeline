@@ -9,6 +9,9 @@ from config import (
     LLM_MODEL
 )
 
+#Cutoff for what amount of relevance grade is allowed
+RELEVANCE_THRESHOLD = 5
+
 class RAGSystem:
     def __init__(self):
         # Configure Google Gemini with the correct API key
@@ -53,6 +56,33 @@ class RAGSystem:
             embedding_function=self.embedding_function
         )
 
+            #Helper function to grade the relevance (1-10) of the context selected (Hallucination prevention)
+    def evaluate_relevance(self, context: str, query_text: str) -> int:
+        grading_prompt = f"""
+ You are evalutating the relevance of retrieved context based on a given question.
+ Please grade the relevance of the provided context to the given question on a scale from 0 to 10,
+ where 0 means "completeley irrelevant" and 10 means "perfectly relevant"
+ 
+ Context:
+ {context}
+ 
+ Question:
+ {query_text}
+ 
+ Provide only the numeric score as your response.
+ """
+        try:
+            grading_response = self.model.generate_content(grading_prompt)
+            graded_score = int(grading_response.text.strip())
+            print(f"Relevance score given: {graded_score}/10")
+            return graded_score
+        except Exception as e:
+            print(f"Error during hallucination check {str(e)}")
+            return 0 # Defaults to 0 if error occurs
+ 
+ 
+ 
+
     def query(self, query_text: str, num_results: int = 3, include_images: bool = True) -> str:
         """
         Query the RAG system and generate a response
@@ -91,8 +121,17 @@ class RAGSystem:
                     if page_content:
                         context += f"  Context: {page_content}...\n\n"
             
+            # print(f"\nRetrieved Context:\n{context if context else "No Context Retrieved"}") #Temporary print statement to viz retrieved context
+
             if not context:
                 return "No relevant information found to answer the query."
+
+            #Evaluate and check relevance score
+            relevance_score = self.evaluate_relevance(context, query_text)
+ 
+            if relevance_score < RELEVANCE_THRESHOLD:
+                print("Context doesn't pass hallucination test") # Delete later; Here to understand explicitly when hallucination test is failed
+                return "I'm not confident enough to answer this question based on retrieved information"
             
             # Prepare prompt with context
             prompt = f"""
@@ -108,6 +147,7 @@ Question: {query_text}
 Answer:
 """
             
+            print("Context passes hallucination test.") # Delete Later. Just verifies that the context passed hallucination test
             # Generate response with Gemini
             response = self.model.generate_content(prompt)
             
