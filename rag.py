@@ -130,23 +130,19 @@ class RAGSystem:
             # Query text collection
             text_results = self.text_collection.query(
                 query_texts=[query_text],
-                n_results=min(num_results, self.text_collection.count())
+                n_results=min(num_results, self.text_collection.count()),
+                include=["documents", "metadatas"]  # Include metadatas in results
             )
             
-            # Extract context from text results
-            context = ""
-            if text_results and text_results['documents'] and text_results['documents'][0]:
-                for doc in text_results['documents'][0]:
-                    if doc is not None:
-                        context += doc + "\n\n"
+            context = self.retrieve_context(query_text, num_results=num_results)
             
-            if not context.strip():
+            if not context:
                 print("No context found in the database")
                 return "No relevant information found to answer the query."
 
             # Evaluate and check relevance score
             relevance_score = self.evaluate_relevance(context, query_text)
-            print(f"Context length: {len(context)} characters")
+            print(f"Total context length: {len(context)} characters")
             print(f"Relevance score: {relevance_score}/10")
 
             if relevance_score < RELEVANCE_THRESHOLD:
@@ -173,4 +169,37 @@ Answer:
             return response.text
         except Exception as e:
             print(f"Error during query: {str(e)}")
-            return f"An error occurred while processing your query: {str(e)}" 
+            return f"An error occurred while processing your query: {str(e)}"
+        
+
+    #Function to retrieve the context based off of any given query      
+    def retrieve_context(self, query_text: str, num_results: int = 3) -> str:
+        try:
+            # Query text collection
+            text_results = self.text_collection.query(
+                query_texts=[query_text],
+                n_results=min(num_results, self.text_collection.count()),
+                include=["documents", "metadatas"]  # Include metadatas in results
+            )
+            
+            # Extract context from text results and track sources
+            context = ""
+            if text_results and text_results['documents'] and text_results['documents'][0]:
+                print("\nSource Documents:")
+                print("-" * 50)
+                for i, (doc, metadata) in enumerate(zip(text_results['documents'][0], text_results['metadatas'][0])):
+                    if doc is not None:
+                        source = metadata.get('source', 'Unknown')
+                        page = metadata.get('page_number', 'Unknown')
+                        doc_len = len(doc)
+                        print(f"{i+1}. Source: {source} (Page {page})")
+                        print(f"   Length: {doc_len} characters")
+                        print(f"   Preview: {doc[:150]}...")
+                        print()
+                        context += doc + "\n\n"
+                print("-" * 50)
+                return context.strip()
+            
+        except Exception as e:
+            print(f"Error retrieving context: {str(e)}")
+            return ""
