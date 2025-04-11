@@ -55,11 +55,14 @@ class RAGSystem:
             settings=CHROMA_SETTINGS
         )
         
+
+
         # Create embedding function - must match the one used in ingestion
         self.embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
             model_name=EMBEDDING_MODEL
         )
         
+
         # Define HNSW index parameters for better search
         hnsw_config = {
             "hnsw:space": "cosine", 
@@ -79,7 +82,7 @@ class RAGSystem:
             print("Successfully connected to ChromaDB collection")
         except Exception as e:
             print(f"Error connecting to collection: {str(e)}")
-            raise  # Re-raise the exception since we can't proceed without a collection
+            raise
 
     #Helper function to grade the relevance (1-10) of the context selected (Hallucination prevention)
     def evaluate_relevance(self, context: str, query_text: str) -> int:

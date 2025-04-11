@@ -208,7 +208,6 @@ if __name__ == "__main__":
     
     # Process documents directory
     ingestion.ingest_documents("./documents")
-        
 
 
 
