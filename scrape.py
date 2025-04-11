@@ -1,9 +1,16 @@
 import os
 import requests
-from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 import urllib.parse
 from collections import deque
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+from functools import lru_cache
 
 def create_documents_dir():
     """Create a documents directory if it doesn't exist."""
@@ -17,21 +24,23 @@ def download_file(url, save_path):
     """Download a file from a URL and save it to the specified path."""
     try:
         response = requests.get(url, stream=True, timeout=30)
-        response.raise_for_status()  # Raise an exception for 4xx/5xx responses
+        response.raise_for_status()
         
         with open(save_path, 'wb') as file:
             for chunk in response.iter_content(chunk_size=8192):
                 if chunk:
                     file.write(chunk)
         
-        print(f"Downloaded: {save_path}")
+        print(f"Downloaded: {save_path} from {url}")
         return True
     except Exception as e:
         print(f"Failed to download {url}: {e}")
         return False
 
-def is_valid_file_extension(url, extensions):
+@lru_cache(maxsize=1000)
+def is_valid_file_extension(url, extensions_tuple):
     """Check if the URL has one of the specified file extensions."""
+    extensions = set(extensions_tuple)  # Convert tuple back to set
     return any(url.lower().endswith(ext) for ext in extensions)
 
 def is_same_domain(base_url, url):
@@ -39,39 +48,32 @@ def is_same_domain(base_url, url):
     base_domain = urllib.parse.urlparse(base_url).netloc
     url_domain = urllib.parse.urlparse(url).netloc
     
-    # Original strict check
-    # return base_domain == url_domain
-    
-    # More lenient check - accept subdomains
     if base_domain == url_domain:
         return True
     
-        
-    # Check if url_domain is a subdomain of base_domain
     if url_domain.endswith('.' + base_domain):
         return True
         
-    # Check if base_domain is a subdomain of url_domain
     if base_domain.endswith('.' + url_domain):
         return True
     
     return False
 
+@lru_cache(maxsize=1000)
 def clean_url(url):
     """Clean up the URL by removing fragments and normalizing."""
     parsed = urllib.parse.urlparse(url)
-    # Remove fragments and normalize
     cleaned = parsed._replace(fragment='')
-    # Remove trailing slash for consistency
     path = cleaned.path
     if path.endswith('/') and len(path) > 1:
         path = path[:-1]
         cleaned = cleaned._replace(path=path)
     return urllib.parse.urlunparse(cleaned)
 
+@lru_cache(maxsize=1000)
 def is_excluded_file(url):
     """Check if the URL points to a file type that should be excluded from crawling."""
-    excluded_extensions = [
+    excluded_extensions = (
         # Images
         '.png', '.gif', '.jpg', '.jpeg', '.bmp', '.webp', '.svg', '.ico', '.tiff',
         # Downloads
@@ -80,130 +82,126 @@ def is_excluded_file(url):
         '.py', '.java', '.js', '.c', '.cpp', '.h', '.cs', '.php', '.rb', '.go', '.rs',
         # Other binary files
         '.md', '.db', '.sqlite', '.so', '.dll'
-    ]
+    )
     return any(url.lower().endswith(ext) for ext in excluded_extensions)
 
 def scrape_page_for_links_and_files(url, base_url, extensions, visited_pages, max_depth):
-    """Scrape a page for both links to other pages and file links."""
+    """Scrape a page for both links to other pages and file links using Selenium."""
     print(f"Scraping page: {url}")
-    file_links = []
-    page_links = []
-    
-    # Sets to prevent duplicates on the same page
-    seen_file_links = set()
-    seen_page_links = set()
+    file_links = set()
+    page_links = set()
     
     try:
-        # Skip if URL is an excluded file
-        if is_excluded_file(url):
-            print(f"Skipping excluded file: {url}")
-            return [], []
-            
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
+        # Initialize Chrome WebDriver
+        options = webdriver.ChromeOptions()
+        options.add_argument('--headless')  # Run in headless mode
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        driver = webdriver.Chrome(options=options)
         
-        soup = BeautifulSoup(response.text, 'html.parser')
-        print(f"Found {len(soup.find_all('a', href=True))} links on page {url}")
+        # Set page load timeout
+        driver.set_page_load_timeout(30)
+        
+        # Navigate to the URL
+        driver.get(url)
+        
+        # Wait for the page to load
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.TAG_NAME, "body"))
+        )
         
         # Find all anchor tags
-        for link in soup.find_all('a', href=True):
-            href = link['href']
-            
-            # Convert relative URLs to absolute URLs
-            absolute_url = urllib.parse.urljoin(url, href)
-            cleaned_url = clean_url(absolute_url)
-            
-            # Skip excluded files for page crawling (but still download if they match extensions)
-            if is_excluded_file(cleaned_url) and not is_valid_file_extension(cleaned_url, extensions):
-                continue
-            
-            # Debug URLs being processed
-            #if is_valid_file_extension(cleaned_url, extensions):
-            #    print(f"Found file: {cleaned_url}")
-            
-            # Skip already visited pages and external domains
-            if cleaned_url in visited_pages:
-                #print(f"Skipping already visited: {cleaned_url}")
-                continue
-            if not is_same_domain(base_url, cleaned_url):
-                #print(f"Skipping external domain: {cleaned_url}")
+        links = driver.find_elements(By.TAG_NAME, "a")
+        print(f"Found {len(links)} links on page {url}")
+        
+        for link in links:
+            try:
+                href = link.get_attribute("href")
+                if not href:
+                    continue
+                    
+                # Convert relative URLs to absolute URLs
+                absolute_url = urllib.parse.urljoin(url, href)
+                cleaned_url = clean_url(absolute_url)
+                
+                # Skip excluded files for page crawling
+                if is_excluded_file(cleaned_url) and not is_valid_file_extension(cleaned_url, extensions):
+                    continue
+                
+                # Skip already visited pages and external domains
+                if cleaned_url in visited_pages:
+                    continue
+                if not is_same_domain(base_url, cleaned_url):
+                    continue
+                
+                # Check if it's a file or a page
+                if is_valid_file_extension(cleaned_url, extensions):
+                    file_links.add(cleaned_url)
+                    print(f"Added file: {cleaned_url}")
+                elif cleaned_url.startswith(base_url):
+                    page_links.add(cleaned_url)
+                    print(f"Added page: {cleaned_url}")
+                    
+            except Exception as e:
+                print(f"Error processing link: {e}")
                 continue
                 
-            # Check if it's a file or a page
-            if is_valid_file_extension(cleaned_url, extensions):
-                if cleaned_url not in seen_file_links:
-                    file_links.append(cleaned_url)
-                    seen_file_links.add(cleaned_url)
-                    print(f"Added file: {cleaned_url}")
-                else:
-                    #print(f"Skipping duplicate file: {cleaned_url}")
-                    pass
-            elif cleaned_url.startswith(base_url):  # Only add pages from same domain
-                if cleaned_url not in seen_page_links:
-                    page_links.append(cleaned_url)
-                    seen_page_links.add(cleaned_url)
-                    print(f"Added page: {cleaned_url}")
-                #else:
-                    #print(f"Skipping duplicate page: {cleaned_url}")
-    
+    except TimeoutException:
+        print(f"Timeout while loading {url}")
     except Exception as e:
         print(f"Error scraping {url}: {e}")
+    finally:
+        try:
+            driver.quit()
+        except:
+            pass
     
-    return file_links, page_links
+    return list(file_links), list(page_links)
 
-def bfs_crawl(start_url, extensions, max_depth=2, max_pages=30):
-    
+def bfs_crawl(start_url, extensions, max_depth=2, max_pages=30, max_files=float('inf')):
     """Perform a breadth-first search of the website, prioritizing by distance from root."""
     base_url = urllib.parse.urlparse(start_url).scheme + "://" + urllib.parse.urlparse(start_url).netloc
     
     visited_pages = set()
-    file_links = []
+    file_links = set()
+    extensions_tuple = tuple(extensions)
     
-    # Queue entries are (url, depth)
     queue = deque([(start_url, 0)])
     visited_pages.add(clean_url(start_url))
     
     print(f"Starting BFS crawl from {start_url} with max depth {max_depth}")
+    start_time = time.time()
     
-    while queue and len(visited_pages) < max_pages:
+    while queue and len(visited_pages) < max_pages and len(file_links) < max_files:
         current_url, current_depth = queue.popleft()
         
-        # Skip if we've reached max depth or if it's an excluded file
         if current_depth > max_depth or is_excluded_file(current_url):
             continue
             
-        # Process current page
         new_file_links, new_page_links = scrape_page_for_links_and_files(
-            current_url, base_url, extensions, visited_pages, max_depth
+            current_url, base_url, extensions_tuple, visited_pages, max_depth
         )
         
-        # Add discovered files
-        file_links.extend(new_file_links)
+        file_links.update(new_file_links)
         
-        print(f"Found {len(new_file_links)} files on {current_url}")
+        if len(file_links) >= max_files:
+            print(f"Reached maximum number of files ({max_files})")
+            break
         
-        # If we're not at max depth, add new pages to the queue
         if current_depth < max_depth:
             for page_link in new_page_links:
                 cleaned_link = clean_url(page_link)
-                # Skip excluded files when adding to the queue
                 if cleaned_link not in visited_pages and not is_excluded_file(cleaned_link):
                     queue.append((cleaned_link, current_depth + 1))
                     visited_pages.add(cleaned_link)
     
-    # Remove duplicates while preserving order
-    unique_file_links = []
-    seen = set()
-    for link in file_links:
-        if link not in seen:
-            seen.add(link)
-            unique_file_links.append(link)
-    
-    print(f"BFS crawl complete. Visited {len(visited_pages)} pages, found {len(unique_file_links)} unique files")
-    return unique_file_links, visited_pages
+    end_time = time.time()
+    print(f"BFS crawl complete. Visited {len(visited_pages)} pages, found {len(file_links)} unique files")
+    print(f"Crawl time: {end_time - start_time:.2f} seconds")
+    return list(file_links), visited_pages
 
 def download_files(file_links):
-    """Download files from a list of links to the documents directory."""
+    """Download files from a list of links to the documents directory using parallel processing."""
     if not file_links:
         print("No files to download")
         return
@@ -211,24 +209,35 @@ def download_files(file_links):
     create_documents_dir()
     
     successful_downloads = 0
-    for url in file_links:
-        # Extract filename from URL
-        filename = os.path.basename(urllib.parse.urlparse(url).path)
-        
-        # If filename is empty or has no extension, generate a name
-        if not filename or '.' not in filename:
-            filename = f"document_{successful_downloads + 1}{get_extension_from_url(url)}"
-        
-        save_path = os.path.join("documents", filename)
-        
-        # Download the file
-        if download_file(url, save_path):
-            successful_downloads += 1
+    start_time = time.time()
     
+    # Use ThreadPoolExecutor for parallel downloads
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        # Create a list of futures
+        future_to_url = {}
+        for url in file_links:
+            filename = os.path.basename(urllib.parse.urlparse(url).path)
+            if not filename or '.' not in filename:
+                filename = f"document_{successful_downloads + 1}{get_extension_from_url(url)}"
+            save_path = os.path.join("documents", filename)
+            future = executor.submit(download_file, url, save_path)
+            future_to_url[future] = url
+        
+        # Process completed downloads
+        for future in as_completed(future_to_url):
+            url = future_to_url[future]
+            try:
+                if future.result():
+                    successful_downloads += 1
+            except Exception as e:
+                print(f"Error downloading {url}: {e}")
+    
+    end_time = time.time()
     print(f"\nDownload summary:")
     print(f"Total files found: {len(file_links)}")
     print(f"Successfully downloaded: {successful_downloads}")
     print(f"Failed downloads: {len(file_links) - successful_downloads}")
+    print(f"Total time: {end_time - start_time:.2f} seconds")
 
 def get_extension_from_url(url):
     """Try to determine file extension from URL."""
@@ -329,14 +338,14 @@ def get_extension_from_url(url):
     # Default extension if we can't determine
     return ".html"
 
-def scrape_and_download(start_url, max_pages = float('inf')):
+def scrape_and_download(start_url, max_depth = float('inf'), max_pages = float('inf'), max_files = float('inf')):
     """Main function to scrape and download files."""
     # Target URL to scrape - set to Berkeley site
 
 
     
     # Maximum depth for BFS crawl
-    max_depth = 3
+    
     
     # File extensions to look for
     valid_extensions = [
@@ -359,18 +368,23 @@ def scrape_and_download(start_url, max_pages = float('inf')):
 
     
     # Perform BFS crawl to find files
-    file_links, visited_pages = bfs_crawl(start_url, valid_extensions, max_depth, max_pages)
-    
-    print(f"Total visited pages: {len(visited_pages)}")
+    file_links, visited_pages = bfs_crawl(start_url, valid_extensions, max_depth, max_pages, max_files)
     
     # Download the files
     download_files(file_links)
+    
+    # Print final statistics
+    print("\nFinal Statistics:")
+    print(f"Total pages visited: {len(visited_pages)}")
+    print(f"Total files found: {len(file_links)}")
+    print(f"Download directory size: {sum(os.path.getsize(os.path.join('documents', f)) for f in os.listdir('documents') if os.path.isfile(os.path.join('documents', f))) / (1024*1024):.2f} MB")
 
 if __name__ == "__main__":
 
     arista = "https://www.arista.com/en/"
     cs61a = "https://cs61a.org"
 
-    scrape_and_download(arista, 1000)
+    #leave last two parameters blank to scrape indefinitely
+    scrape_and_download(cs61a,max_depth = 10, max_pages=10000, max_files=10)
     
      
