@@ -5,9 +5,10 @@ import scrape
 
 def main():
     print("\n========== SCRAPING ==========")
+
     scrape.scrape_and_download("https://neilthomass.github.io/aristatest/")
 
-    
+
     # Initialize systems
     print("\n========== DOCUMENT INGESTION ==========")
     

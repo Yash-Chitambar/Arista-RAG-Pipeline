@@ -118,8 +118,8 @@ def scrape_page_for_links_and_files(url, base_url, extensions, visited_pages, ma
                 continue
             
             # Debug URLs being processed
-            if is_valid_file_extension(cleaned_url, extensions):
-                print(f"Found file: {cleaned_url}")
+            #if is_valid_file_extension(cleaned_url, extensions):
+            #    print(f"Found file: {cleaned_url}")
             
             # Skip already visited pages and external domains
             if cleaned_url in visited_pages:
@@ -136,21 +136,23 @@ def scrape_page_for_links_and_files(url, base_url, extensions, visited_pages, ma
                     seen_file_links.add(cleaned_url)
                     print(f"Added file: {cleaned_url}")
                 else:
-                    print(f"Skipping duplicate file: {cleaned_url}")
+                    #print(f"Skipping duplicate file: {cleaned_url}")
+                    pass
             elif cleaned_url.startswith(base_url):  # Only add pages from same domain
                 if cleaned_url not in seen_page_links:
                     page_links.append(cleaned_url)
                     seen_page_links.add(cleaned_url)
                     print(f"Added page: {cleaned_url}")
-                else:
-                    print(f"Skipping duplicate page: {cleaned_url}")
+                #else:
+                    #print(f"Skipping duplicate page: {cleaned_url}")
     
     except Exception as e:
         print(f"Error scraping {url}: {e}")
     
     return file_links, page_links
 
-def bfs_crawl(start_url, extensions, max_depth=2):
+def bfs_crawl(start_url, extensions, max_depth=2, max_pages=30):
+    
     """Perform a breadth-first search of the website, prioritizing by distance from root."""
     base_url = urllib.parse.urlparse(start_url).scheme + "://" + urllib.parse.urlparse(start_url).netloc
     
@@ -163,7 +165,7 @@ def bfs_crawl(start_url, extensions, max_depth=2):
     
     print(f"Starting BFS crawl from {start_url} with max depth {max_depth}")
     
-    while queue:
+    while queue and len(visited_pages) < max_pages:
         current_url, current_depth = queue.popleft()
         
         # Skip if we've reached max depth or if it's an excluded file
@@ -327,9 +329,10 @@ def get_extension_from_url(url):
     # Default extension if we can't determine
     return ".html"
 
-def scrape_and_download(start_url):
+def scrape_and_download(start_url, max_pages = float('inf')):
     """Main function to scrape and download files."""
     # Target URL to scrape - set to Berkeley site
+
 
     
     # Maximum depth for BFS crawl
@@ -356,7 +359,7 @@ def scrape_and_download(start_url):
 
     
     # Perform BFS crawl to find files
-    file_links, visited_pages = bfs_crawl(start_url, valid_extensions, max_depth)
+    file_links, visited_pages = bfs_crawl(start_url, valid_extensions, max_depth, max_pages)
     
     print(f"Total visited pages: {len(visited_pages)}")
     
@@ -364,6 +367,10 @@ def scrape_and_download(start_url):
     download_files(file_links)
 
 if __name__ == "__main__":
-    scrape_and_download("https://cs61a.org")
-     # start_url = "https://www.arista.com/en/"
+
+    arista = "https://www.arista.com/en/"
+    cs61a = "https://cs61a.org"
+
+    scrape_and_download(arista, 1000)
+    
      
