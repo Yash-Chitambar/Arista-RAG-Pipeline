@@ -5,6 +5,9 @@ from chromadb.utils import embedding_functions
 from pathlib import Path
 from dotenv import load_dotenv
 import os
+from deepeval.metrics import HallucinationMetric
+from deepeval.test_case import LLMTestCase
+from deepeval.models.base_model import DeepEvalBaseLLM
 load_dotenv()
 
 # Load environment variables
@@ -26,6 +29,28 @@ CHROMA_SETTINGS = ChromaSettings(
     is_persistent=True,
     persist_directory=str(CHROMA_PERSIST_DIR)
 )
+
+#Creating Wrapper Class over Gemini to run DeepEval for Hallucination Testing on images
+class GeminiWrapper(DeepEvalBaseLLM):
+    def __init__(self, generative_model):
+        self.model = generative_model
+
+    def load_model(self):
+        return self.model
+
+    def generate(self, prompt: str) -> str:
+        try:
+            response = self.model.generate_content(prompt)
+            return response.text.strip()
+        except Exception as e:
+            print(f"Error during generation: {str(e)}")
+            return ""
+
+    async def a_generate(self, prompt: str) -> str:
+        return self.generate(prompt)
+
+    def get_model_name(self) -> str:
+        return "Google Generative AI"
 
 class RAGSystem:
     def __init__(self):
@@ -165,10 +190,20 @@ Question: {query_text}
 Answer:
 """
             
-            print("Context passes hallucination test. Generating response...")
+            print("Context passes hallucination test.")
             # Generate response with Gemini
             response = self.model.generate_content(prompt)
-            
+            #Check generated response with context generation using DeepEval (Provides score from 0 - 1 where higher scores represent hallucinations)
+            wrapped_model = GeminiWrapper(self.model)
+            # Use wrapped_model in HallucinationMetric
+            metric = HallucinationMetric(threshold=0.5, model=wrapped_model)
+            test_case = LLMTestCase(
+                input = query_text,
+                actual_output = response,
+                context = [context]
+            )
+            metric.measure(test_case)
+            print(metric.score, metric.reason)
             return response.text
         except Exception as e:
             print(f"Error during query: {str(e)}")
