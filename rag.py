@@ -1,46 +1,23 @@
 import google.generativeai as genai
-import chromadb
-from chromadb.config import Settings as ChromaSettings
-import numpy as np
+from pinecone import Pinecone, ServerlessSpec
+from llama_index.core import VectorStoreIndex
+from llama_index.vector_stores.pinecone import PineconeVectorStore
+from llama_index.core import StorageContext
+from llama_index.core.settings import Settings
+from ingestion import GoogleGenAIEmbedding
 from config import (
     GOOGLE_API_KEY,
-    CHROMA_PERSIST_DIR,
     EMBEDDING_MODEL,
-    LLM_MODEL
+    LLM_MODEL,
+    PINECONE_API_KEY
 )
 
 #Cutoff for what amount of relevance grade is allowed
 RELEVANCE_THRESHOLD = 5
 
-
-# Custom embedding function for ChromaDB that uses Google's embedding model
-class GoogleEmbeddingFunction:
-    def __init__(self, model_name):
-        genai.configure(api_key=GOOGLE_API_KEY)
-        self.model_name = model_name
-        
-    def __call__(self, input):
-        """
-        Generate embeddings for the given texts using Google's embedding model
-        """
-        if not input:
-            return []
-            
-        embeddings = []
-        for text in input:
-            try:
-                result = genai.embed_content(
-                    model=self.model_name,
-                    content=text,
-                    task_type="retrieval_document"
-                )
-                embeddings.append(result["embedding"])
-            except Exception as e:
-                print(f"Error generating embedding: {str(e)}")
-                # Return a zero vector as fallback
-                embeddings.append([0.0] * 768)  # Typical embedding dimension
-                
-        return embeddings
+# Initialize Pinecone with new API
+pc = Pinecone(api_key=PINECONE_API_KEY)
+INDEX_NAME = "quickstart"
 
 class RAGSystem:
     def __init__(self):
@@ -64,25 +41,41 @@ class RAGSystem:
             generation_config=self.generation_config
         )
         
-        # Initialize ChromaDB client
-        self.chroma_client = chromadb.PersistentClient(
-            path=CHROMA_PERSIST_DIR,
-            settings=ChromaSettings(anonymized_telemetry=False)
-        )
+        # Create custom Google embedding model
+        self.embed_model = GoogleGenAIEmbedding(model_name=EMBEDDING_MODEL, api_key=GOOGLE_API_KEY)
         
-        # Create Google embedding function
-        self.embedding_function = GoogleEmbeddingFunction(model_name=EMBEDDING_MODEL)
-        
-        # Get collection with embedding function
-        self.collection = self.chroma_client.get_collection(
-            name="documents",
-            embedding_function=self.embedding_function
-        )
+        try:
+            # Connect to Pinecone index
+            self.pinecone_index = pc.Index(INDEX_NAME)
+            
+            # Create Pinecone vector store
+            vector_store = PineconeVectorStore(pinecone_index=self.pinecone_index)
+            
+            # Configure global settings to use our embedding model and no LLM
+            Settings.embed_model = self.embed_model
+            Settings.llm = None  # No LLM to avoid OpenAI dependency
+            
+            # Create a new index that uses the existing vectors in Pinecone
+            self.index = VectorStoreIndex.from_vector_store(
+                vector_store=vector_store
+            )
+            
+            # Create a simple retriever (not a query engine)
+            self.retriever = self.index.as_retriever(
+                similarity_top_k=10  # Retrieve documents for filtering
+            )
+            
+            print(f"Successfully connected to Pinecone index: {INDEX_NAME}")
+            
+        except Exception as e:
+            print(f"Error connecting to Pinecone: {str(e)}")
+            raise ValueError(f"Failed to initialize Pinecone index: {str(e)}")
+
     def evaluate_relevance(self, context: str, query_text: str) -> int:
         grading_prompt = f"""
- You are evalutating the relevance of retrieved context based on a given question.
+ You are evaluating the relevance of retrieved context based on a given question.
  Please grade the relevance of the provided context to the given question on a scale from 0 to 10,
- where 0 means "completeley irrelevant" and 10 means "perfectly relevant"
+ where 0 means "completely irrelevant" and 10 means "perfectly relevant"
  
  Context:
  {context}
@@ -98,36 +91,34 @@ class RAGSystem:
             print(f"Relevance score given: {graded_score}/10")
             return graded_score
         except Exception as e:
-            print(f"Error during hallucination check {str(e)}")
+            print(f"Error during relevance check: {str(e)}")
             return 0 # Defaults to 0 if error occurs
 
     def query(self, query_text: str, num_results: int = 3) -> str:
         """
-        Query the RAG system and generate a response
+        Query Pinecone directly for relevant documents and use Google Gemini for response generation
         """
         try:
-            # Query ChromaDB - it will compute the embedding automatically
-            results = self.collection.query(
-                query_texts=[query_text],
-                n_results=min(num_results * 2, self.collection.count())  # Get more results to filter
-            )
+            # Retrieve documents from Pinecone using the retriever
+            nodes = self.retriever.retrieve(query_text)
             
-            # Extract context from results and evaluate relevance
+            if not nodes:
+                return "No relevant content found to answer the query."
+                
+            # Evaluate relevance of each retrieved node with Gemini
             relevant_context = []
-            if results and 'documents' in results and results['documents']:
-                for doc in results['documents'][0]:
-                    # Evaluate relevance of each document
-                    relevance_score = self.evaluate_relevance(doc, query_text)
-                    if relevance_score >= RELEVANCE_THRESHOLD:
-                        relevant_context.append(doc)
+            for node in nodes:
+                relevance_score = self.evaluate_relevance(node.text, query_text)
+                if relevance_score >= RELEVANCE_THRESHOLD:
+                    relevant_context.append(node.text)
             
             if not relevant_context:
-                return "No relevant context found to answer the query."
+                return "No highly relevant context found to answer the query."
             
             # Join relevant context with double newlines
             context = "\n\n".join(relevant_context)
             
-            # Prepare prompt with filtered context
+            # Prepare prompt for Gemini
             prompt = f"""
 Given the following context information, please answer the question.
 If the answer cannot be determined from the context, say "I don't know based on the provided context."
