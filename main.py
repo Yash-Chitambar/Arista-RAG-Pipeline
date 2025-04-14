@@ -6,7 +6,7 @@ import scrape
 def main():
     print("\n========== SCRAPING ==========")
 
-    scrape.scrape_and_download("https://neilthomass.github.io/aristatest/")
+    scrape.scrape_and_download("arista.com",max_files=4)
 
 
     # Initialize systems
@@ -58,7 +58,7 @@ def main():
 
     # Example query
     print("\n========== EXAMPLE QUERY ==========")
-    query = "What are the key points about the topic?"
+    query = "What is Arista Networks? What is their contact information?"
     print(f"Query: {query}")
     response = rag.query(query)
     print(f"\nResponse: {response}")
