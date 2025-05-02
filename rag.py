@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 import os
 from deepeval.metrics import HallucinationMetric
 from deepeval.test_case import LLMTestCase
+from deepeval.metrics import ContextualRelevancyMetric
 from deepeval.models.base_model import DeepEvalBaseLLM
 load_dotenv()
 
@@ -167,15 +168,6 @@ class RAGSystem:
             if not context:
                 print("No context found in the database")
                 return "No relevant information found to answer the query."
-
-            # Evaluate and check relevance score
-            relevance_score = self.evaluate_relevance(context, query_text)
-            print(f"Total context length: {len(context)} characters")
-            print(f"Relevance score: {relevance_score}/10")
-
-            if relevance_score < RELEVANCE_THRESHOLD:
-                print("Context doesn't pass hallucination test")
-                return "I'm not confident enough to answer this question based on retrieved information"
             
             # Prepare prompt with context
             prompt = f"""
@@ -189,21 +181,44 @@ Question: {query_text}
 
 Answer:
 """
-            
-            print("Context passes hallucination test.")
             # Generate response with Gemini
             response = self.model.generate_content(prompt)
-            #Check generated response with context generation using DeepEval (Provides score from 0 - 1 where higher scores represent hallucinations)
             wrapped_model = GeminiWrapper(self.model)
-            # Use wrapped_model in HallucinationMetric
-            metric = HallucinationMetric(threshold=0.5, model=wrapped_model)
-            test_case = LLMTestCase(
+            # Use wrapped_model to test for hallucinations in context (Score from 0 - 1: (#relevant statements/#Total statements)
+            # Uses custom evaluation function if deepeval fails
+            try:
+                context_metric = ContextualRelevancyMetric(threshold=0.5, model=wrapped_model)
+                context_test_case = LLMTestCase(
+                    input = query_text,
+                    actual_output = response,
+                    retrieval_context = [context]
+                )
+                context_metric.measure(context_test_case)
+                print(context_metric.score, context_metric.reason)
+                if (context_metric.score < 0.5):
+                    print("Context doesn't pass deepeval context relevancy test")
+                    return "I'm not confident enough to answer this question based on retrieved information"
+            except Exception as e:
+                print(f"Error in contextual relevancy check using deepeval: {str(e)}")
+                print("Switching to custom relevance evaluation")
+                relevance_score = self.evaluate_relevance(context, query_text)
+                if (relevance_score < RELEVANCE_THRESHOLD):
+                    print("Context doesn't pass custom context relevancy test")
+                    return "I'm not confident enough to answer this question based on retrieved information"
+
+            #Check generated response with context generation using DeepEval (Provides score from 0 - 1 where higher scores represent hallucinations)
+            output_metric = HallucinationMetric(threshold=0.5, model=wrapped_model)
+            output_test_case = LLMTestCase(
                 input = query_text,
                 actual_output = response,
                 context = [context]
             )
-            metric.measure(test_case)
-            print(metric.score, metric.reason)
+            output_metric.measure(output_test_case)
+            print(output_metric.score, output_metric.reason)
+            if (output_metric.score >= 0.5):
+                print("Context doesn't pass deepeval context relevancy test")
+                return "I'm not confident enough to answer this question based on retrieved information"
+            print("Context passes all hallucination tests.")
             return response.text
         except Exception as e:
             print(f"Error during query: {str(e)}")
