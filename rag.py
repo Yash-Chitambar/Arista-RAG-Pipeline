@@ -1,7 +1,10 @@
 import google.generativeai as genai
-import chromadb
-from chromadb.config import Settings as ChromaSettings
-from chromadb.utils import embedding_functions
+from pinecone import Pinecone, ServerlessSpec
+from llama_index.core import VectorStoreIndex
+from llama_index.vector_stores.pinecone import PineconeVectorStore
+from llama_index.core import StorageContext
+from llama_index.core.settings import Settings
+from ingestion import GoogleGenAIEmbedding
 from pathlib import Path
 from dotenv import load_dotenv
 import os
@@ -14,24 +17,24 @@ load_dotenv()
 # Load environment variables
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 LLM_MODEL = os.getenv("LLM_MODEL", "gemini-pro")  # Default to gemini-pro if not specified
-CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "./chroma_db")  # Default to ./chroma_db
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")  # Default to all-MiniLM-L6-v2
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "models/embedding-001")  # Default embedding model
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 
 # Validate required environment variables
 if not GOOGLE_API_KEY:
     raise ValueError("GOOGLE_API_KEY is required but not found in environment variables")
+if not PINECONE_API_KEY:
+    raise ValueError("PINECONE_API_KEY is required but not found in environment variables")
 
 # Cutoff for what amount of relevance grade is allowed
 RELEVANCE_THRESHOLD = 5
 
-# Define consistent ChromaDB settings
-CHROMA_SETTINGS = ChromaSettings(
-    anonymized_telemetry=False,
-    is_persistent=True,
-    persist_directory=str(CHROMA_PERSIST_DIR)
-)
+# Initialize Pinecone with new API
+pc = Pinecone(api_key=PINECONE_API_KEY)
+INDEX_NAME = "quickstart"
+DIMENSION = 768
 
-#Creating Wrapper Class over Gemini to run DeepEval for Hallucination Testing on images
+#Creating Wrapper Class over Gemini to run DeepEval for Hallucination Testing
 class GeminiWrapper(DeepEvalBaseLLM):
     def __init__(self, generative_model):
         self.model = generative_model
@@ -75,47 +78,49 @@ class RAGSystem:
             generation_config=self.generation_config
         )
         
-        # Initialize ChromaDB client with consistent settings
-        self.chroma_client = chromadb.PersistentClient(
-            path=CHROMA_PERSIST_DIR,
-            settings=CHROMA_SETTINGS
-        )
+        # Verify embedding model is correct
+        embedding_model_name = EMBEDDING_MODEL
+        if not embedding_model_name.startswith("models/"):
+            print(f"Warning: Embedding model '{embedding_model_name}' is not a valid Google model. Using default 'models/embedding-001'")
+            embedding_model_name = "models/embedding-001"
+            
+        # Create custom Google embedding model
+        self.embed_model = GoogleGenAIEmbedding(model_name=embedding_model_name, api_key=GOOGLE_API_KEY)
+        print(f"RAGSystem using embedding model: {self.embed_model.model_name}")
         
-
-
-        # Create embedding function - must match the one used in ingestion
-        self.embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name=EMBEDDING_MODEL
-        )
-        
-
-        # Define HNSW index parameters for better search
-        hnsw_config = {
-            "hnsw:space": "cosine", 
-            "hnsw:construction_ef": 128,
-            "hnsw:search_ef": 128,
-            "hnsw:M": 16
-        }
-        
-        # Get or create text collection with embedding function
         try:
-            self.text_collection = self.chroma_client.get_or_create_collection(
-                name="text_documents",
-                metadata={"hnsw:space": "cosine"},
-                embedding_function=self.embedding_function
+            # Connect to Pinecone index
+            self.pinecone_index = pc.Index(INDEX_NAME)
+            
+            # Create Pinecone vector store
+            vector_store = PineconeVectorStore(pinecone_index=self.pinecone_index)
+            
+            # Configure global settings to use our embedding model and no LLM
+            Settings.embed_model = self.embed_model
+            Settings.llm = None  # No LLM to avoid OpenAI dependency
+            
+            # Create a new index that uses the existing vectors in Pinecone
+            self.index = VectorStoreIndex.from_vector_store(
+                vector_store=vector_store
             )
             
-            print("Successfully connected to ChromaDB collection")
+            # Create a simple retriever (not a query engine)
+            self.retriever = self.index.as_retriever(
+                similarity_top_k=10  # Retrieve documents for filtering
+            )
+            
+            print(f"Successfully connected to Pinecone index: {INDEX_NAME}")
+            
         except Exception as e:
-            print(f"Error connecting to collection: {str(e)}")
-            raise
+            print(f"Error connecting to Pinecone: {str(e)}")
+            raise ValueError(f"Failed to initialize Pinecone index: {str(e)}")
 
     #Helper function to grade the relevance (1-10) of the context selected (Hallucination prevention)
     def evaluate_relevance(self, context: str, query_text: str) -> int:
         grading_prompt = f"""
- You are evalutating the relevance of retrieved context based on a given question.
+ You are evaluating the relevance of retrieved context based on a given question.
  Please grade the relevance of the provided context to the given question on a scale from 0 to 10,
- where 0 means "completeley irrelevant" and 10 means "perfectly relevant"
+ where 0 means "completely irrelevant" and 10 means "perfectly relevant"
  
  Context:
  {context}
@@ -131,11 +136,11 @@ class RAGSystem:
             print(f"Relevance score given: {graded_score}/10")
             return graded_score
         except Exception as e:
-            print(f"Error during hallucination check {str(e)}")
+            print(f"Error during relevance check: {str(e)}")
             return 0 # Defaults to 0 if error occurs
 
     def _get_sample_images(self, query_text: str, num_results: int = 3):
-        """Fallback method to get sample images when ChromaDB query fails"""
+        """Fallback method to get sample images when Pinecone query fails"""
         try:
             # Find image files in the extracted_images directory
             image_dir = Path("documents/extracted_images")
@@ -153,16 +158,10 @@ class RAGSystem:
 
     def query(self, query_text: str, num_results: int = 3) -> str:
         """
-        Query the RAG system and generate a response
+        Query the RAG system and generate a response with hallucination detection
         """
         try:
-            # Query text collection
-            text_results = self.text_collection.query(
-                query_texts=[query_text],
-                n_results=min(num_results, self.text_collection.count()),
-                include=["documents", "metadatas"]  # Include metadatas in results
-            )
-            
+            # Get the context from Pinecone
             context = self.retrieve_context(query_text, num_results=num_results)
             
             if not context:
@@ -184,6 +183,7 @@ Answer:
             # Generate response with Gemini
             response = self.model.generate_content(prompt)
             wrapped_model = GeminiWrapper(self.model)
+            
             # Use wrapped_model to test for hallucinations in context (Score from 0 - 1: (#relevant statements/#Total statements)
             # Uses custom evaluation function if deepeval fails
             try:
@@ -216,42 +216,50 @@ Answer:
             output_metric.measure(output_test_case)
             print(output_metric.score, output_metric.reason)
             if (output_metric.score >= 0.5):
-                print("Context doesn't pass deepeval context relevancy test")
+                print("Context doesn't pass deepeval hallucination test")
                 return "I'm not confident enough to answer this question based on retrieved information"
+                
             print("Context passes all hallucination tests.")
             return response.text
         except Exception as e:
             print(f"Error during query: {str(e)}")
             return f"An error occurred while processing your query: {str(e)}"
         
-
     #Function to retrieve the context based off of any given query      
     def retrieve_context(self, query_text: str, num_results: int = 3) -> str:
         try:
-            # Query text collection
-            text_results = self.text_collection.query(
-                query_texts=[query_text],
-                n_results=min(num_results, self.text_collection.count()),
-                include=["documents", "metadatas"]  # Include metadatas in results
-            )
+            # Retrieve documents from Pinecone using the retriever
+            nodes = self.retriever.retrieve(query_text)
             
-            # Extract context from text results and track sources
-            context = ""
-            if text_results and text_results['documents'] and text_results['documents'][0]:
-                print("\nSource Documents:")
-                print("-" * 50)
-                for i, (doc, metadata) in enumerate(zip(text_results['documents'][0], text_results['metadatas'][0])):
-                    if doc is not None:
-                        source = metadata.get('source', 'Unknown')
-                        page = metadata.get('page_number', 'Unknown')
-                        doc_len = len(doc)
-                        print(f"{i+1}. Source: {source} (Page {page})")
-                        print(f"   Length: {doc_len} characters")
-                        print(f"   Preview: {doc[:150]}...")
-                        print()
-                        context += doc + "\n\n"
-                print("-" * 50)
-                return context.strip()
+            if not nodes:
+                return ""
+                
+            # Evaluate relevance of each retrieved node with Gemini
+            relevant_nodes = []
+            print("\nSource Documents:")
+            print("-" * 50)
+            
+            for i, node in enumerate(nodes):
+                relevance_score = self.evaluate_relevance(node.text, query_text)
+                if relevance_score >= RELEVANCE_THRESHOLD:
+                    relevant_nodes.append(node)
+                    source = node.metadata.get('file_name', 'Unknown')
+                    page = node.metadata.get('page_number', 'Unknown')
+                    doc_len = len(node.text)
+                    print(f"{i+1}. Source: {source} (Page {page})")
+                    print(f"   Relevance: {relevance_score}/10")
+                    print(f"   Length: {doc_len} characters")
+                    print(f"   Preview: {node.text[:150]}...")
+                    print()
+            
+            print("-" * 50)
+            
+            if not relevant_nodes:
+                return ""
+            
+            # Join relevant context with double newlines
+            context = "\n\n".join([node.text for node in relevant_nodes])
+            return context
             
         except Exception as e:
             print(f"Error retrieving context: {str(e)}")
