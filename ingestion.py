@@ -27,6 +27,7 @@ from llama_index.vector_stores.pinecone import PineconeVectorStore
 from llama_index.core import VectorStoreIndex
 from llama_index.core.settings import Settings
 from pydantic import Field, ConfigDict
+from llama_index.core.text_splitter import TokenTextSplitter
 from config import (
     GOOGLE_API_KEY,
     LLAMA_CLOUD_API_KEY,
@@ -52,7 +53,6 @@ class GoogleGenAIEmbedding(BaseEmbedding):
     
     model_name: str = Field(default=EMBEDDING_MODEL)
     api_key: str = Field(default=GOOGLE_API_KEY)
-    max_chunk_size: int = Field(default=8000)  # Maximum characters per chunk
     
     def __init__(self, model_name=EMBEDDING_MODEL, api_key=GOOGLE_API_KEY, **kwargs):
         # Force model name to be a valid Google model
@@ -63,30 +63,6 @@ class GoogleGenAIEmbedding(BaseEmbedding):
         genai.configure(api_key=api_key)
         super().__init__(model_name=model_name, **kwargs)
         print(f"Initialized GoogleGenAIEmbedding with model: {self.model_name}")
-
-    def _chunk_text(self, text: str) -> List[str]:
-        """Split text into chunks that fit within the model's context window."""
-        if len(text) <= self.max_chunk_size:
-            return [text]
-            
-        chunks = []
-        current_chunk = ""
-        
-        # Split by sentences to maintain context
-        sentences = text.split('. ')
-        
-        for sentence in sentences:
-            if len(current_chunk) + len(sentence) + 2 <= self.max_chunk_size:
-                current_chunk += sentence + '. '
-            else:
-                if current_chunk:
-                    chunks.append(current_chunk.strip())
-                current_chunk = sentence + '. '
-                
-        if current_chunk:
-            chunks.append(current_chunk.strip())
-            
-        return chunks
 
     def _get_query_embedding(self, query: str) -> List[float]:
         """Get query embedding."""
@@ -102,36 +78,16 @@ class GoogleGenAIEmbedding(BaseEmbedding):
             return [0.0] * DIMENSION
 
     def _get_text_embedding(self, text: str) -> List[float]:
-        """Get text embedding with chunking for long texts."""
+        """Get text embedding."""
         try:
-            # Split text into chunks if needed
-            chunks = self._chunk_text(text)
-            
-            # Get embeddings for each chunk
-            chunk_embeddings = []
-            for chunk in chunks:
-                try:
-                    result = genai.embed_content(
-                        model=self.model_name,
-                        content=chunk,
-                        task_type="retrieval_document"
-                    )
-                    chunk_embeddings.append(result["embedding"])
-                except Exception as e:
-                    print(f"Error generating embedding for chunk: {str(e)}")
-                    continue
-            
-            if not chunk_embeddings:
-                print("No valid embeddings generated for any chunks")
-                return [0.0] * DIMENSION
-                
-            # Average the embeddings if we have multiple chunks
-            if len(chunk_embeddings) > 1:
-                return [sum(emb) / len(chunk_embeddings) for emb in zip(*chunk_embeddings)]
-            return chunk_embeddings[0]
-            
+            result = genai.embed_content(
+                model=self.model_name,
+                content=text,
+                task_type="retrieval_document"
+            )
+            return result["embedding"]
         except Exception as e:
-            print(f"Error in text embedding process: {str(e)}")
+            print(f"Error generating text embedding: {str(e)}")
             return [0.0] * DIMENSION
 
     def _is_valid_embedding(self, embedding: List[float]) -> bool:
@@ -186,6 +142,10 @@ class DocumentIngestion:
             # Create custom Google embedding model
             self.embed_model = GoogleGenAIEmbedding(model_name=embedding_model_name, api_key=GOOGLE_API_KEY)
             print(f"DocumentIngestion using embedding model: {self.embed_model.model_name}")
+            
+            # Initialize text splitter
+            self.text_splitter = TokenTextSplitter(chunk_size=1024, chunk_overlap=100)
+            print("Initialized TokenTextSplitter with chunk_size=1024, chunk_overlap=100")
             
             # Initialize Pinecone index with new API
             if INDEX_NAME not in pc.list_indexes().names():
@@ -367,188 +327,158 @@ TEXT:
         return trimmed_metadata
 
     def process_json_results(self, md_json_objs, pdf_path: str):
-        """Process JSON results from LlamaParse and extract text"""
-        text_nodes = []
-        
-        # Get the job ID from the first object
-        job_id = md_json_objs[0].get("job_id", "")
-        if not job_id:
-            print("Warning: No job_id found in LlamaParse results")
-        else:
-            print(f"Using LlamaParse job_id: {job_id}")
+        """Process JSON results from LlamaParse into Documents."""
+        try:
+            # Create documents from parsed results
+            file_name = os.path.basename(pdf_path)
+            documents = []
             
-        # Process each page for text nodes
-        for obj in md_json_objs:
-            for page in obj["pages"]:
-                # Limit markdown content to 10,000 characters to avoid embedding issues
-                md_content = page["md"]
-                if len(md_content) > 10000:
-                    print(f"Truncating page {page['page']} content from {len(md_content)} to 10000 characters")
-                    md_content = md_content[:10000]
+            for obj in md_json_objs:
+                page_num = obj.get("page_num", 0)
+                content = obj.get("text", "").strip()
                 
-                # Create text node from markdown content
-                text_node = TextNode(
-                    text=md_content,
-                    metadata={
-                        "page_number": page["page"],
-                        "type": "text",
-                        "source": os.path.basename(pdf_path),
-                        "file_name": os.path.basename(pdf_path),
-                        "file_path": pdf_path,
-                        "processed_date": str(datetime.datetime.now())
-                    }
-                )
-                text_nodes.append(text_node)
+                # Skip empty content
+                if not content:
+                    continue
                 
-        print(f"Extracted {len(text_nodes)} text nodes")
-        return text_nodes
-
-    def ingest_documents(self, directory_path: str) -> None:
-        """Ingest only new documents from a directory and store them in Pinecone"""
-        # Check if directory exists
-        if not os.path.exists(directory_path):
-            print(f"Directory {directory_path} does not exist.")
-            return
-            
-        # Get all PDF files
-        pdf_files = [f for f in os.listdir(directory_path) if f.endswith('.pdf')]
-        if not pdf_files:
-            print(f"No PDF files found in {directory_path}.")
-            return
-
-        # Get already processed files
-        processed_files = self.get_processed_files()
-        
-        # Filter for new files
-        new_files = [f for f in pdf_files if f not in processed_files]
-        
-        if not new_files:
-            print("No new files to process. Skipping ingestion.")
-            return
-        
-        print(f"Found {len(new_files)} new files to process: {new_files}")
-
-        # Process each new PDF file
-        all_text_nodes = []
-        for pdf_file in new_files:
-            pdf_path = os.path.join(directory_path, pdf_file)
-            print(f"\nProcessing {pdf_path}...")
-            
-            try:
-                # Parse PDF and get JSON results
-                json_objs = self.parser.get_json_result(pdf_path)
-                
-                # Process the JSON results
-                text_nodes = self.process_json_results(json_objs, pdf_path)
-                all_text_nodes.extend(text_nodes)
-                
-                print(f"Extracted {len(text_nodes)} text nodes from {pdf_path}")
-                
-                # Keep track of processed files
-                if not hasattr(self, '_processed_files'):
-                    self._processed_files = set()
-                self._processed_files.add(pdf_file)
-                
-            except Exception as e:
-                print(f"Error processing {pdf_path}: {str(e)}")
-                continue
-        
-        if not all_text_nodes:
-            print("No text nodes extracted from documents.")
-            return
-            
-        print(f"\nProcessing {len(all_text_nodes)} total text nodes...")
-        
-        # Enhance node metadata and create index
-        print("\nEnhancing metadata and generating embeddings...")
-        
-        # Process each node with enhanced metadata
-        valid_nodes = []
-        for i, node in enumerate(all_text_nodes):
-            try:
-                # Prepare base metadata
+                # Base metadata for the document
                 base_metadata = {
-                    "source": node.metadata.get("file_path", "unknown"),
-                    "file_name": node.metadata.get("file_name", "unknown"),
-                    "page_number": node.metadata.get("page_number", 0),
-                    "node_id": i
+                    "file_name": file_name,
+                    "file_path": pdf_path,
+                    "page_number": page_num,
+                    "created_at": datetime.datetime.now().isoformat(),
+                    "document_id": str(uuid.uuid4())
                 }
                 
-                # Generate enhanced metadata
-                enhanced_metadata = self.generate_enhanced_metadata(node.text, base_metadata)
+                # Generate enhanced metadata (title, summary, questions)
+                enhanced_metadata = self.generate_enhanced_metadata(content, base_metadata)
                 
-                # Check and trim metadata if needed
-                safe_metadata = self._check_metadata_size(enhanced_metadata)
-                
-                # Update node metadata with safe metadata
-                node.metadata = safe_metadata
-                
-                # Generate embedding for the node
-                embedding = self.embed_model._get_text_embedding(node.text)
-                
-                # Only keep nodes with valid embeddings
-                if self.embed_model._is_valid_embedding(embedding):
-                    node.embedding = embedding
-                    valid_nodes.append(node)
-                else:
-                    print(f"Skipping node {i} due to invalid embedding")
-                
-                # Print progress every 10 nodes
-                if (i + 1) % 10 == 0 or i == len(all_text_nodes) - 1:
-                    print(f"Progress: {i + 1}/{len(all_text_nodes)} nodes processed")
-                    
-            except Exception as e:
-                print(f"Error processing node {i}: {str(e)}")
-                continue
-        
-        if not valid_nodes:
-            print("No valid nodes with embeddings generated.")
-            return
-            
-        print(f"\nSuccessfully processed {len(valid_nodes)} valid nodes out of {len(all_text_nodes)} total nodes")
-        
-        # Create storage context with Pinecone vector store
-        storage_context = StorageContext.from_defaults(vector_store=self.vector_store)
-        
-        # Configure global settings to use our embedding model and no LLM
-        Settings.embed_model = self.embed_model
-        Settings.llm = None  # No LLM to avoid OpenAI dependency
-        
-        # Create index from nodes with valid embeddings using batching
-        print("\nCreating vector store index with batched processing...")
-        
-        # Use smaller batches to avoid overwhelming Pinecone
-        BATCH_SIZE = 10
-        total_batches = (len(valid_nodes) + BATCH_SIZE - 1) // BATCH_SIZE
-        
-        # Process in batches
-        for i in range(0, len(valid_nodes), BATCH_SIZE):
-            batch_nodes = valid_nodes[i:i+BATCH_SIZE]
-            batch_num = (i // BATCH_SIZE) + 1
-            
-            print(f"Processing batch {batch_num}/{total_batches} with {len(batch_nodes)} nodes...")
-            
-            try:
-                # Create a temporary index for this batch
-                temp_index = VectorStoreIndex(
-                    nodes=batch_nodes,
-                    storage_context=storage_context
+                # Create LlamaIndex Document with metadata
+                doc = Document(
+                    text=content,
+                    metadata=enhanced_metadata
                 )
+                documents.append(doc)
+            
+            # Use TokenTextSplitter to split documents into nodes
+            nodes = self.text_splitter.get_nodes_from_documents(documents)
+            print(f"Split {len(documents)} documents into {len(nodes)} nodes")
+            
+            # Create storage context with Pinecone vector store
+            storage_context = StorageContext.from_defaults(vector_store=self.vector_store)
+            
+            # Create index from nodes and persist to Pinecone
+            index = VectorStoreIndex(
+                nodes=nodes,
+                storage_context=storage_context,
+                embed_model=self.embed_model
+            )
+            
+            print(f"Successfully added {len(nodes)} nodes to Pinecone index from {file_name}")
+            return nodes
+            
+        except Exception as e:
+            print(f"Error processing documents: {str(e)}")
+            return []
+
+    def ingest_documents(self, directory_path: str) -> None:
+        """Process all PDF documents in the given directory."""
+        try:
+            pdf_directory = Path(directory_path)
+            if not pdf_directory.exists():
+                print(f"Directory not found: {directory_path}")
+                return
                 
-                print(f"Successfully indexed batch {batch_num}")
+            # Get list of PDF files
+            pdf_files = list(pdf_directory.glob("**/*.pdf"))
+            print(f"Found {len(pdf_files)} PDF files in {directory_path}")
+            
+            if not pdf_files:
+                print("No PDF files found in the directory")
+                return
                 
-                # Save reference to the latest index
-                self.index = temp_index
+            # Get set of already processed files
+            processed_files = self.get_processed_files()
+            
+            # Process each PDF file
+            for pdf_path in pdf_files:
+                pdf_str = str(pdf_path)
+                if pdf_str in processed_files:
+                    print(f"Skipping already processed file: {pdf_path}")
+                    continue
+                    
+                print(f"Processing PDF file: {pdf_path}")
                 
-            except Exception as e:
-                print(f"Error indexing batch {batch_num}: {str(e)}")
-                print(f"Skipping this batch and continuing...")
-                continue
-        
-        # Save the count for later reference
-        self._last_indexed_count = len(valid_nodes)
-        
-        print(f"Successfully indexed {len(valid_nodes)} nodes in Pinecone with enhanced metadata")
+                try:
+                    # Read the PDF file in binary mode and pass it to LlamaParse
+                    with open(pdf_str, "rb") as pdf_file:
+                        # Prepare extra info with file name
+                        extra_info = {
+                            "file_name": os.path.basename(pdf_str),
+                            "file_path": pdf_str
+                        }
+                        
+                        # Use load_data method to directly load binary file content
+                        documents = self.parser.load_data(pdf_file, extra_info=extra_info)
+                        print(f"Successfully parsed {pdf_path} using binary mode")
+                    
+                    # Convert LlamaParse documents to LlamaIndex documents
+                    llama_index_docs = []
+                    for i, doc in enumerate(documents):
+                        # Base metadata for the document
+                        base_metadata = {
+                            "file_name": os.path.basename(pdf_str),
+                            "file_path": pdf_str,
+                            "page_number": i + 1,  # Assuming 1-indexed pages
+                            "created_at": datetime.datetime.now().isoformat(),
+                            "document_id": str(uuid.uuid4())
+                        }
+                        
+                        # Generate enhanced metadata
+                        enhanced_metadata = self.generate_enhanced_metadata(doc.text, base_metadata)
+                        
+                        # Create Document with metadata
+                        llama_index_doc = Document(
+                            text=doc.text,
+                            metadata=enhanced_metadata
+                        )
+                        llama_index_docs.append(llama_index_doc)
+                    
+                    print(f"Created {len(llama_index_docs)} documents from {pdf_path}")
+                    
+                    # Use TokenTextSplitter to split documents into nodes
+                    nodes = self.text_splitter.get_nodes_from_documents(llama_index_docs)
+                    print(f"Split {len(llama_index_docs)} documents into {len(nodes)} nodes")
+                    
+                    # Create storage context with Pinecone vector store
+                    storage_context = StorageContext.from_defaults(vector_store=self.vector_store)
+                    
+                    # Create index from nodes and persist to Pinecone
+                    index = VectorStoreIndex(
+                        nodes=nodes,
+                        storage_context=storage_context,
+                        embed_model=self.embed_model
+                    )
+                    
+                    # Store reference to the index
+                    self.index = index
+                    
+                    # Add to processed files set
+                    if hasattr(self, '_processed_files'):
+                        self._processed_files.add(pdf_str)
+                    else:
+                        self._processed_files = {pdf_str}
+                        
+                    print(f"Successfully processed {pdf_path} and added to Pinecone")
+                        
+                except Exception as e:
+                    print(f"Error processing file {pdf_path}: {str(e)}")
+                    continue
+                    
+            print("Document ingestion completed successfully")
+            
+        except Exception as e:
+            print(f"Error in document ingestion: {str(e)}")
 
     def search_documents(self, query: str, n_results: int = 3) -> List[Dict]:
         """Search documents in Pinecone"""
