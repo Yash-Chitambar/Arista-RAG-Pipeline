@@ -144,8 +144,8 @@ class DocumentIngestion:
             print(f"DocumentIngestion using embedding model: {self.embed_model.model_name}")
             
             # Initialize text splitter
-            self.text_splitter = TokenTextSplitter(chunk_size=1024, chunk_overlap=100)
-            print("Initialized TokenTextSplitter with chunk_size=1024, chunk_overlap=100")
+            self.text_splitter = TokenTextSplitter(chunk_size=512, chunk_overlap=50)
+            print("Initialized TokenTextSplitter with chunk_size=512, chunk_overlap=50")
             
             # Initialize Pinecone index with new API
             if INDEX_NAME not in pc.list_indexes().names():
