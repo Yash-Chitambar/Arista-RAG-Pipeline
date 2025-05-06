@@ -32,7 +32,8 @@ dependencies = [
     "webdriver-manager (>=4.0.2,<5.0.0)",
     "deepeval (>=2.7.1,<3.0.0)",
     "pinecone>=6.0.2",
-    "llama-index-vector-stores-pinecone>=0.4.5"
+    "llama-index-vector-stores-pinecone>=0.4.5",
+    "streamlit>=1.45.0"
 ]
 package-mode = false
 

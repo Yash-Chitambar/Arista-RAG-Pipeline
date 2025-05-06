@@ -6,7 +6,7 @@ import scrape
 def main():
     print("\n========== SCRAPING ==========")
 
-    scrape.scrape_and_download("arista.com",max_files=4)
+    scrape.scrape_and_download("www.arista.com/en/",max_files=4)
 
 
     # Initialize systems
