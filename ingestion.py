@@ -28,13 +28,7 @@ from llama_index.core import VectorStoreIndex
 from llama_index.core.settings import Settings
 from pydantic import Field, ConfigDict
 from llama_index.core.text_splitter import TokenTextSplitter
-from config import (
-    GOOGLE_API_KEY,
-    LLAMA_CLOUD_API_KEY,
-    PINECONE_API_KEY,
-    LLM_MODEL,
-    EMBEDDING_MODEL
-)
+
 
 # Initialize Pinecone with new API
 pc = Pinecone(api_key=PINECONE_API_KEY)
