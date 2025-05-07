@@ -26,8 +26,8 @@ if not GOOGLE_API_KEY:
 if not PINECONE_API_KEY:
     raise ValueError("PINECONE_API_KEY is required but not found in environment variables")
 
-# Cutoff for what amount of relevance grade is allowed
-RELEVANCE_THRESHOLD = 5
+# Cutoff for what amount of relevance grade is allowed (Value from 0-1)
+RELEVANCE_THRESHOLD = 0.33
 
 # Initialize Pinecone with new API
 pc = Pinecone(api_key=PINECONE_API_KEY)
@@ -119,8 +119,8 @@ class RAGSystem:
     def evaluate_relevance(self, context: str, query_text: str) -> int:
         grading_prompt = f"""
  You are evaluating the relevance of retrieved context based on a given question.
- Please grade the relevance of the provided context to the given question on a scale from 0 to 10,
- where 0 means "completely irrelevant" and 10 means "perfectly relevant"
+ Please grade the relevance of the provided context to the given question on a scale from 0 to 1 using decimal values,
+ where 0 means "completely irrelevant" and 1 means "perfectly relevant"
  
  Context:
  {context}
@@ -132,12 +132,35 @@ class RAGSystem:
  """
         try:
             grading_response = self.model.generate_content(grading_prompt)
-            graded_score = int(grading_response.text.strip())
-            print(f"Relevance score given: {graded_score}/10")
+            graded_score = float(grading_response.text.strip())
+            print(f"RELEVANCE SCORE GIVEN: {graded_score}")
             return graded_score
         except Exception as e:
             print(f"Error during relevance check: {str(e)}")
             return 0 # Defaults to 0 if error occurs
+
+    def evaluate_relevance_deepeval(self, model, context: str, query_text: str) -> int:
+        """
+        Try to evaluate relevance using DeepEval. If it fails, fallback to Gemini scoring.
+        Returns a decimal score from 0 to 1.
+        """
+        try:
+            metric = ContextualRelevancyMetric(threshold=0.5, model=model)
+            test_case = LLMTestCase(
+                input=query_text,
+                actual_output="",  # Not needed for relevance check
+                retrieval_context=[context]
+            )
+            metric.measure(test_case)
+            score = metric.score
+            print(f"DeepEval relevance score: {score}")
+            print(f"DeepEval relevance score reason: {metric.reason}")
+            return score
+        except Exception as e:
+            print(f"DeepEval relevance evaluation failed: {str(e)}")
+            print("Falling back to Gemini-based relevance scoring.")
+            return self.evaluate_relevance(context, query_text)
+
 
     def _get_sample_images(self, query_text: str, num_results: int = 3):
         """Fallback method to get sample images when Pinecone query fails"""
@@ -182,29 +205,13 @@ Answer:
 """
             # Generate response with Gemini
             response = self.model.generate_content(prompt)
-            wrapped_model = GeminiWrapper(self.model)
-            
-            # Use wrapped_model to test for hallucinations in context (Score from 0 - 1: (#relevant statements/#Total statements)
-            # Uses custom evaluation function if deepeval fails
-            try:
-                context_metric = ContextualRelevancyMetric(threshold=0.5, model=wrapped_model)
-                context_test_case = LLMTestCase(
-                    input = query_text,
-                    actual_output = response,
-                    retrieval_context = [context]
-                )
-                context_metric.measure(context_test_case)
-                print(context_metric.score, context_metric.reason)
-                if (context_metric.score < 0.5):
-                    print("Context doesn't pass deepeval context relevancy test")
-                    return "I'm not confident enough to answer this question based on retrieved information"
-            except Exception as e:
-                print(f"Error in contextual relevancy check using deepeval: {str(e)}")
-                print("Switching to custom relevance evaluation")
-                relevance_score = self.evaluate_relevance(context, query_text)
-                if (relevance_score < RELEVANCE_THRESHOLD):
-                    print("Context doesn't pass custom context relevancy test")
-                    return "I'm not confident enough to answer this question based on retrieved information"
+
+            wrapped_model = GeminiWrapper(self.model) #Model compatible with DeepEval that uses gemini
+
+            #Check for contextual relevancy
+            score = self.evaluate_relevance_deepeval(wrapped_model, context, query_text)
+            if (score < RELEVANCE_THRESHOLD): 
+                return "I'm not confident enough to answer this question based on retrieved information"
 
             #Check generated response with context generation using DeepEval (Provides score from 0 - 1 where higher scores represent hallucinations)
             output_metric = HallucinationMetric(threshold=0.5, model=wrapped_model)
@@ -214,7 +221,8 @@ Answer:
                 context = [context]
             )
             output_metric.measure(output_test_case)
-            print(output_metric.score, output_metric.reason)
+            print(f"Output hallucination score: {output_metric.score}")
+            print(f"Output hallucination score reason: {output_metric.reason}")
             if (output_metric.score >= 0.5):
                 print("Context doesn't pass deepeval hallucination test")
                 return "I'm not confident enough to answer this question based on retrieved information"
@@ -240,7 +248,7 @@ Answer:
             print("-" * 50)
             
             for i, node in enumerate(nodes):
-                relevance_score = self.evaluate_relevance(node.text, query_text)
+                relevance_score = self.evaluate_relevance(node.text, query_text) #Uses custom evaluate_relevance as deepeval would be too slow
                 if relevance_score >= RELEVANCE_THRESHOLD:
                     relevant_nodes.append(node)
                     source = node.metadata.get('file_name', 'Unknown')
