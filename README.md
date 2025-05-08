@@ -14,7 +14,7 @@ The system consists of three main components:
 2. **Document Ingestion** (`ingestion.py`)
    - Processes downloaded documents
    - Uses LlamaParse for document parsing
-   - Stores processed content in ChromaDB
+   - Stores processed content in Pinecone vector database
    - Handles document metadata and embeddings
 
 3. **RAG System** (`rag.py`)
@@ -50,6 +50,7 @@ The system consists of three main components:
 - Chrome browser and ChromeDriver
 - Google API key for Gemini
 - LlamaParse API key
+- Pinecone API key
 
 ## Installation
 
@@ -76,8 +77,8 @@ Create a `.env` file with:
 GOOGLE_API_KEY=your_google_api_key
 LLAMA_PARSE_API_KEY=your_llama_parse_key
 LLM_MODEL=gemini-pro
-CHROMA_PERSIST_DIR=./chroma_db
-EMBEDDING_MODEL=all-MiniLM-L6-v2
+PINECONE_API_KEY=your_pinecone_api_key
+EMBEDDING_MODEL=models/embedding-001
 ```
 
 ## Usage
@@ -89,7 +90,7 @@ python main.py
 
 The system will:
 1. Scrape the website for documents
-2. Process and ingest documents into ChromaDB
+2. Process and ingest documents into Pinecone
 3. Start an interactive query mode
 
 2. Run individual components:
@@ -117,8 +118,8 @@ response = rag.query("Your question here")
 - `valid_extensions`: File types to download
 
 ### Document Ingestion
-- `CHROMA_PERSIST_DIR`: ChromaDB storage location
 - `EMBEDDING_MODEL`: Embedding model for vector storage
+- `PINECONE_API_KEY`: Your Pinecone API key
 
 ### RAG System
 - `LLM_MODEL`: Language model to use
@@ -133,7 +134,6 @@ Arista-RAG-Pipeline/
 ├── ingestion.py         # Document processing
 ├── rag.py              # RAG system implementation
 ├── documents/          # Downloaded files
-├── chroma_db/         # Vector database
 ├── .env               # Environment variables
 ├── pyproject.toml     # Poetry dependencies
 └── README.md         # This file
@@ -142,7 +142,7 @@ Arista-RAG-Pipeline/
 ## Dependencies
 
 - selenium: Web browser automation
-- chromadb: Vector database
+- pinecone-client: Vector database
 - llama-index: Document processing
 - google-generativeai: Gemini model
 - python-dotenv: Environment management
@@ -160,7 +160,7 @@ look at full list in pyproject.toml file
 2. **Document Ingestion Phase**
    - Processes new documents
    - Extracts text and metadata
-   - Stores in ChromaDB
+   - Stores in Pinecone
 
 3. **RAG Query Phase**
    - Processes user questions
@@ -178,15 +178,12 @@ look at full list in pyproject.toml file
 2. **Document Processing Issues**
    - Verify LlamaParse API key
    - Check document formats
-   - Monitor ChromaDB storage
+   - Monitor Pinecone storage
 
 3. **RAG System Issues**
    - Validate Google API key
    - Check model availability
    - Monitor response quality
-
-
-
 
 ## Contact & Authors
 

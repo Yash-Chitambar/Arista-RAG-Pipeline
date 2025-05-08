@@ -1,8 +1,23 @@
 from dotenv import load_dotenv
+import os
+
+# Load environment variables first
+load_dotenv()
+
+# Get environment variables
+PINECONE_API_KEY = os.getenv('PINECONE_API_KEY')
+GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
+EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL', 'models/embedding-001')
+
+# Verify required environment variables
+if not PINECONE_API_KEY:
+    raise ValueError("PINECONE_API_KEY environment variable is not set")
+if not GOOGLE_API_KEY:
+    raise ValueError("GOOGLE_API_KEY environment variable is not set")
+
 import google.generativeai as genai
 from llama_index.core import Document
 from llama_index.core import VectorStoreIndex
-load_dotenv()
 from llama_parse import LlamaParse
 from llama_cloud_services import LlamaParse
 from llama_index.core import Settings
@@ -13,11 +28,8 @@ from llama_index.core.schema import TextNode
 from llama_index.core import Settings
 from typing import List, Set, Dict, Any, Optional
 import json
-import chromadb
-from chromadb.config import Settings as ChromaSettings
 import datetime
 import uuid
-import os
 from pathlib import Path
 import re
 from copy import deepcopy

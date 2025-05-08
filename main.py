@@ -6,32 +6,24 @@ import scrape
 def main():
     print("\n========== SCRAPING ==========")
 
-    scrape.scrape_and_download("www.arista.com/en/",max_files=4)
-
+    #scrape.scrape_and_download("www.arista.com/en/",max_files=4)
 
     # Initialize systems
     print("\n========== DOCUMENT INGESTION ==========")
     
-    # Check if ChromaDB directory exists
-    chroma_dir = "./chroma_db"
-    if not os.path.exists(chroma_dir):
-        print(f"No existing ChromaDB found. Will create new one at {chroma_dir}")
-    else:
-        print(f"Found existing ChromaDB at {chroma_dir}")
-    
     ingestion = DocumentIngestion()
     doc_count = ingestion.get_document_count()
-    print(f"Found {doc_count} documents")
+    print(f"Found {doc_count} documents in Pinecone")
 
     print("\n========== RAG SYSTEM ==========")
     rag = RAGSystem()
     
-    # Check if ChromaDB exists and has documents
+    # Check if Pinecone has documents
     if doc_count > 0:
         processed_files = ingestion.get_processed_files()
         print(f"Already processed files: {list(processed_files)}")
     else:
-        print("No documents in ChromaDB yet. Please add PDFs to the documents directory.")
+        print("No documents in Pinecone yet. Please add PDFs to the documents directory.")
     
     # Check for new documents and process them
     documents_dir = "./documents"
@@ -53,7 +45,7 @@ def main():
     
     # Only proceed to query mode if we have documents
     if ingestion.get_document_count() == 0:
-        print("\nNo documents in ChromaDB. Please add PDFs and run the script again.")
+        print("\nNo documents in Pinecone. Please add PDFs and run the script again.")
         return
 
     # Example query

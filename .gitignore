@@ -37,7 +37,5 @@ ENV/
 
 # Project specific
 documents/
-chroma_db/
 *.log
 .DS_Store
-config.py
